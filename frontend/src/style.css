@@ -1,0 +1,96 @@
+﻿@import "tailwindcss";
+
+/* ============================================================
+   万能视频下载器 — 设计系统 (ai.codefather.cn 风格)
+   ============================================================ */
+
+@theme {
+  --color-primary: #3a5df9;
+  --color-primary-light: #5b78ff;
+  --color-primary-dark: #2a4ad9;
+  --color-accent: #ffb801;
+  --color-surface: #ffffff;
+  --color-soft: #f7faff;
+  --color-soft-blue: #e3eeff;
+}
+
+/* Base */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+  background: #ffffff;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Hero gradient background */
+.hero-bg {
+  background: linear-gradient(180deg, #f0f4ff 0%, #ffffff 100%);
+}
+
+/* Card with ring — exact match to ai.codefather.cn painting cards */
+.card-ring {
+  @apply rounded-xl bg-white ring-1 ring-slate-200/50 transition-all duration-500;
+}
+.card-ring:hover {
+  box-shadow: 0 25px 50px -12px rgba(58, 93, 249, 0.15);
+}
+
+/* Glassmorphism badge — exact match */
+.glass-badge {
+  @apply rounded-full bg-black/40 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-white backdrop-blur-xl ring-1 ring-white/20;
+}
+
+/* Primary button pill */
+.btn-primary {
+  @apply rounded-full bg-[#3a5df9] text-white font-medium transition-all duration-300 hover:opacity-90 hover:shadow-lg hover:shadow-blue-500/25 active:scale-95;
+}
+
+/* Secondary button */
+.btn-secondary {
+  @apply rounded-full bg-white text-slate-700 font-medium ring-1 ring-slate-200 transition-all duration-300 hover:bg-slate-50 hover:ring-slate-300 active:scale-95;
+}
+
+/* Search input — exact match */
+.search-bar {
+  @apply flex items-center gap-2 bg-white rounded-full ring-1 ring-slate-200 px-4 pr-2 h-12 w-full max-w-[640px] transition-all duration-300;
+}
+.search-bar:focus-within {
+  @apply ring-2 ring-[#3a5df9]/30 shadow-lg shadow-blue-500/10;
+}
+
+/* Skeleton loading */
+.skeleton {
+  @apply bg-gradient-to-br from-slate-100 to-slate-200 animate-pulse rounded-lg;
+}
+
+/* Masonry grid */
+.masonry-grid {
+  column-gap: 24px;
+}
+.masonry-grid > * {
+  break-inside: avoid;
+  margin-bottom: 24px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+/* Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

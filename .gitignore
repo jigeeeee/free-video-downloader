@@ -1,0 +1,30 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Downloads
+downloads/*
+!downloads/.gitkeep
+
+# Environment
+.env
+cookies.txt
+yt-dlp-cookies.txt
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Temp
+*.db
+_t.py
+_fix.py
+_douyin_src/
