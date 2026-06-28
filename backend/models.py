@@ -55,3 +55,174 @@ class FileInfo(BaseModel):
 
 class FileListResponse(BaseModel):
     files: List[FileInfo]
+
+
+# ── Subtitle models ──────────────────────────────────────────────────────
+
+class SubtitleRequest(BaseModel):
+    url: str
+    languages: Optional[List[str]] = None   # e.g. ["en", "zh-Hans"]; None = auto
+
+
+class SubtitleLang(BaseModel):
+    code: str
+    source: str = "manual"   # "manual" | "auto"
+
+
+class SubtitleSegment(BaseModel):
+    index: int
+    start: str                # "00:01:23"
+    end: str                  # "00:01:25"
+    start_sec: float
+    text: str
+
+
+class SubtitleEntry(BaseModel):
+    lang: str
+    source: str
+    text_preview: str
+    txt_path: str
+    srt_path: str
+    line_count: int
+    segment_count: int = 0
+    segments: List[SubtitleSegment] = []
+
+
+class SubtitleResult(BaseModel):
+    video_id: str
+    title: str
+    available_langs: List[SubtitleLang] = []
+    extracted: List[SubtitleEntry] = []
+
+
+class SubtitleTask(BaseModel):
+    task_id: str
+    status: str = "queued"       # queued | processing | done | error
+    percent: float = 0.0
+    result: Optional[SubtitleResult] = None
+    error: Optional[str] = None
+
+
+# ── AI Summary models ────────────────────────────────────────────────────
+
+class SummaryRequest(BaseModel):
+    url: str
+    lang: str = "zh"                   # "zh" | "en"
+
+
+class ChapterItem(BaseModel):
+    timestamp: str                     # e.g. "01:23"
+    title: str
+
+
+class SummaryResult(BaseModel):
+    one_liner: str = ""
+    chapters: List[ChapterItem] = []
+    key_points: List[str] = []
+    tags: List[str] = []
+    video_title: str = ""
+    tokens_used: Optional[dict] = None
+
+
+class SummaryTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[SummaryResult] = None
+    error: Optional[str] = None
+
+
+# ── Mindmap models ───────────────────────────────────────────────────────
+
+class MindmapRequest(BaseModel):
+    url: str
+    lang: str = "zh"
+
+
+class MindmapResult(BaseModel):
+    mindmap_text: str = ""
+    video_title: str = ""
+    tokens_used: Optional[dict] = None
+
+
+class MindmapTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[MindmapResult] = None
+    error: Optional[str] = None
+
+
+# ── AI Q&A models ────────────────────────────────────────────────────────
+
+class ChatTurn(BaseModel):
+    question: str
+    answer: str = ""
+
+
+class AskRequest(BaseModel):
+    url: str
+    question: str
+    lang: str = "zh"
+    history: List[ChatTurn] = []      # previous Q&A turns for multi-turn context
+
+
+class AskResponse(BaseModel):
+    question: str
+    answer: str
+    video_title: str = ""
+    tokens_used: Optional[dict] = None
+
+
+class AskTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[AskResponse] = None
+    error: Optional[str] = None
+
+
+# ── Transcribe models ────────────────────────────────────────────────────
+
+class TranscribeTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+# ── Batch models ─────────────────────────────────────────────────────────
+
+class BatchRequest(BaseModel):
+    urls: List[str]                                    # list of video URLs
+
+
+class BatchTaskInfo(BaseModel):
+    task_id: str
+    url: str
+    task_type: str                                     # "download" | "summary" | etc.
+    status: str
+
+
+class BatchResponse(BaseModel):
+    batch_id: str
+    tasks: List[BatchTaskInfo] = []
+    total: int = 0
+    done: int = 0
+    processing: int = 0
+    queued: int = 0
+    error: int = 0
+
+
+# ── Translate models ─────────────────────────────────────────────────────
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_lang: str = "简体中文"
+
+
+class TranslateResponse(BaseModel):
+    translated_text: str
+    target_lang: str
+    tokens_used: Optional[dict] = None

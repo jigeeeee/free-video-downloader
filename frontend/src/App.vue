@@ -6,6 +6,7 @@ import VideoPreview from "./components/VideoPreview.vue"
 import FormatSelector from "./components/FormatSelector.vue"
 import DownloadCard from "./components/DownloadCard.vue"
 import VideoLibrary from "./components/VideoLibrary.vue"
+import AiPanel from "./components/AiPanel.vue"
 
 const videoInfo = ref(null)
 const isLoading = ref(false)
@@ -136,6 +137,13 @@ const statusText = computed(() => {
 
       <div v-if="videoInfo && !isLoading" class="space-y-6">
         <VideoPreview :info="videoInfo" />
+
+        <!-- 🆕 AI 功能面板 -->
+        <AiPanel
+          :url="videoInfo.webpage_url"
+          :title="videoInfo.title"
+        />
+
         <FormatSelector :formats="videoInfo.formats" :selected="selectedFormat" @select="selectedFormat = $event" />
 
         <div class="flex justify-center">
