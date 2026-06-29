@@ -1,95 +1,133 @@
 ﻿# 万能视频下载器 — 项目总结
 
-> 版本: v1.0 | 日期: 2026-06-25
+> 版本: v1.2 | 日期: 2026-06-29
 
 ## 一、项目概述
 
-"万能视频下载器" 是一个基于 Python + Vue 3 的全栈 Web 应用。用户粘贴视频链接即可解析、选择清晰度、一键下载到本地。已支持 YouTube、Bilibili、Douyin（抖音）三大主流平台。
+“万能视频下载器” 是一个基于 Python + Vue 3 的本地全栈 Web 应用。用户粘贴视频链接即可解析、选择清晰度并下载到本地，同时可以对视频进行字幕提取、AI 总结、思维导图、智能问答、内容改写、本地转录和格式转换。
 
-## 二、完成的功能
+当前项目已从单纯下载器升级为“下载 + 理解 + 加工 + 历史管理”的音视频生产力工具。
 
-### 核心功能（Phase 1-3）
+## 二、当前完成的功能
+
+### 核心下载
 
 | 功能 | YouTube | Bilibili | Douyin |
 |------|:---:|:---:|:---:|
 | URL 解析 | ✅ | ✅ | ✅ |
-| 格式选择 | ✅ 16 格式 / 4K | ✅ | ✅ 1080p |
+| 格式选择 | ✅ | ✅ | ✅ |
 | 实时下载进度 | ✅ | ✅ | ✅ |
-| 音视频自动合并 | ✅ yt-dlp 内置 | ✅ yt-dlp 内置 | ✅ ffmpeg |
-| 无需登录 | ✅ | ❌ cookies.txt | ❌ cookies.txt |
-| 应用内播放 | ✅ | ✅ | ✅ |
-| 删除已下载 | ✅ | ✅ | ✅ |
+| 音视频自动合并 | ✅ yt-dlp | ✅ yt-dlp | ✅ ffmpeg |
+| Cookie 支持 | 可选 | ✅ | ✅ |
+| 已下载文件展示 | ✅ | ✅ | ✅ |
+| 删除/播放/下载 | ✅ | ✅ | ✅ |
 
-### 扩展功能
+### AI 与内容处理
 
-- **Masonry 瀑布流视频库** — 已下载视频卡片式展示
-- **cdn 容错** — Douyin 3 个 CDN 备用 URL 自动 fallback
-- **响应式 UI** — 手机/平板/PC 自适应
-- **设计系统** — 仿 ai.codefather.cn 风格（#3a5df9 蓝主色、glassmorphism 标签、rounded-full 搜索栏、shadow-2xl 卡片 hover）
+- 字幕提取：输出 `.srt`、`.txt`、分段字幕和 manifest
+- AI 总结：一句话、章节、要点、标签
+- 思维导图：文本化思维导图
+- AI 问答：基于字幕上下文的问答
+- AI 改写：学习笔记、公众号、小红书、Twitter/X thread、Markdown
+- 字幕翻译：DeepSeek 翻译字幕文本
+- 本地转录：Whisper 子进程转写上传音视频
+
+### 任务与持久化
+
+- SQLite 保存任务、文件记录和 AI 结果
+- `/api/tasks` 统一任务中心
+- `/api/history` 历史记录接口
+- 失败任务重试接口
+- 批量下载任务
+- ffmpeg 格式转换：提取音频、转封装、压缩
+- `/api/health` 启动检查：依赖和 ffmpeg 状态
+
+### Cookie 管理
+
+- `YTDLP_COOKIES_PATH`
+- Bilibili 扫码登录 Cookie
+- 浏览器扩展同步 `downloads/synced_cookies.txt`
+- 根目录 `cookies.txt` / `yt-dlp-cookies.txt`
+- 可选浏览器 Cookie 读取：`YTDLP_COOKIES_BROWSER`
 
 ## 三、技术亮点
 
 ### 1. 自研 Douyin 签名引擎
 
-Douyin 是三大平台中最难攻克的一个。yt-dlp 对 Douyin 支持不完整（"Fresh cookies" 错误）。项目自研了完整的签名方案：
+- X-Bogus：RC4 + MD5 签名
+- A-Bogus：SM3 + 自定义 Base64 + 浏览器指纹
+- 直连 Douyin API 获取详情
+- 视频/音频分离下载后用 ffmpeg 合并
+- 多 CDN URL fallback
 
-- **X-Bogus**：RC4 + MD5 签名，纯 Python 实现
-- **A-Bogus**：SM3 国密哈希 + 自定义 Base64 + 浏览器指纹
-- **API 直调**：绕过 yt-dlp，requests 直连 Douyin API
-- **音视频分离合并**：Douyin 的 video 和 audio 是独立 CDN 流，项目分别下载后用 ffmpeg 合成
+### 2. 统一任务层
 
-### 2. 多平台统一调度
+当前仍使用内存 worker 执行任务，但任务元数据、状态、结果和错误会写入 SQLite。这样既保持本地单机简单部署，又能提供任务中心、历史记录和失败重试基础。
 
-`backend/downloader.py` 作为统一入口，根据 URL 自动路由：
+### 3. 本地生产力闭环
+
+下载文件不再是终点，用户可以继续进行：
 
 ```
-URL → _detect_platform()
-  ├── YouTube  → yt-dlp (3 客户端策略 fallback)
-  ├── Bilibili → yt-dlp + cookies.txt
-  ├── Douyin   → 自研模块 (XBogus + ABogus)
-  └── Other    → yt-dlp 通用
+视频链接/本地文件
+  → 下载/上传
+  → 字幕或转录
+  → 总结/问答/导图/改写
+  → 历史归档或二次创作
 ```
 
-### 3. Cookie 管理
+## 四、当前 API 范围
 
-- `cookies.txt` 统一管理（Netscape 格式）
-- 支持 Bilibili + Douyin 多站点共存
-- Douyin 模块独立读取，不依赖 yt-dlp 的 cookie 逻辑
+当前 FastAPI 注册 33 个 `/api` 路由，覆盖：
 
-## 四、架构演进记录
+- 健康检查：`/api/health`
+- 下载：`/api/info`、`/api/download`、`/api/progress/{id}`
+- 文件：`/api/files`、`/api/download/{name}`
+- 任务：`/api/tasks`、`/api/tasks/{id}`、`/api/tasks/{id}/retry`
+- 历史：`/api/history`
+- 字幕/AI：`/api/subtitles`、`/api/summary`、`/api/mindmap`、`/api/ask`、`/api/translate`、`/api/rewrite`
+- 转录：`/api/transcribe`
+- 批量：`/api/batch`
+- 转换：`/api/convert`
+- Bilibili/Cookie：`/api/bilibili/*`、`/api/cookies/sync`
 
-| 日期 | 变更 | 原因 |
-|------|------|------|
-| 06-23 | yt-dlp subprocess → Python API | header 控制更好 |
-| 06-23 | 3 客户端策略 (web/android/ios) | YouTube bot 检测 |
-| 06-24 | 添加 XBogus 签名 | Bilibili 412 / Douyin "Fresh cookies" |
-| 06-24 | 添加 ABogus (GMSSL) | Douyin API 强制要求 a_bogus |
-| 06-25 | Douyin 完全绕开 yt-dlp | Chrome cookie 锁 + 直链过期 |
-| 06-25 | CDN 3 URL fallback | Douyin 单 URL 超时率高 |
-| 06-25 | ffmpeg 音视频合并 | Douyin 视频无声音 |
-| 06-25 | COOKIES_BROWSER 默认关闭 | Chrome 锁导致 Bilibili 无法下载 |
+## 五、最近验证结果
 
-## 五、性能数据
+已通过：
 
-| 指标 | 数值 |
-|------|------|
-| YouTube 解析速度 | ~3s |
-| Bilibili 解析速度 | ~2s |
-| Douyin 解析速度 | ~2s（含签名计算） |
-| Douyin 1080p 下载 | ~30s（视频 80% + 音频 20%） |
-| 前端构建 | 184ms (Vite) |
+- 后端编译：`python -m compileall main.py config.py backend`
+- 前端构建：`npm run build`
+- API 路由导入
+- `/api/health`、`/api/tasks`、`/api/history`、`/api/files`
+- 文件路径安全校验
+- 上传类型校验
+- ffmpeg 转换小文件
+- YouTube 解析
+- YouTube 字幕提取
+- DeepSeek 翻译和改写
+- YouTube 小视频真实下载
+
+未自动覆盖：
+
+- 指定 Bilibili 视频真实下载
+- 指定 Douyin 视频真实下载
+- 长音视频 Whisper 转录
+- 浏览器扩展真实同步流程
 
 ## 六、已知限制
 
-1. **Douyin** — cookies 需定期刷新（7 天左右），过期需重新导出
-2. **YouTube** — 部分被标记的视频需要 cookies
-3. **Git 推送** — 当前环境需通过代理（7890）或 GitHub API
+1. Douyin 和 Bilibili Cookie 仍可能过期，需要重新扫码或同步。
+2. AI 功能依赖 DeepSeek API Key。
+3. Whisper 转录依赖本地模型下载和 ffmpeg，首次运行可能较慢。
+4. 当前任务执行仍是单机内存 worker，SQLite 负责记录，不适合多进程分布式调度。
+5. Bilibili/Douyin 字幕覆盖仍弱于 YouTube，缺字幕时后续应走下载音频 + Whisper 转录 fallback。
 
 ## 七、后续规划
 
-- [ ] 批量下载（多 URL 队列）
-- [ ] 视频格式转换（MP4 / MKV / MP3）
-- [ ] AI 视频总结（DeepSeek API）
-- [ ] 字幕下载
-- [ ] VIP 付费系统
-- [ ] Docker 一键部署
+- [ ] Bilibili/Douyin 真实回归样例库
+- [ ] 字幕优先、无字幕自动 Whisper fallback
+- [ ] 更完整的批量队列页面
+- [ ] GIF 截取和高级转换参数
+- [ ] Docker 部署包
+- [ ] MCP/OpenAPI 面向 Agent 的调用层
+- [ ] 用户额度/积分模型预留

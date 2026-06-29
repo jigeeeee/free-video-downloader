@@ -7,11 +7,14 @@ import logging
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor
 
 import config
+from backend.cookies import apply_cookie_options, copy_chrome_cookie_db, get_cookiefile
+from backend.media import safe_filename
 
 tasks: Dict[str, dict] = {}
 
@@ -21,11 +24,7 @@ _BROWSER_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
-_YOUTUBE_CLIENT_STRATEGIES = [
-    {},
-    {"youtube": {"player_client": ["android", "web"]}},
-    {"youtube": {"player_client": ["ios", "web"]}},
-]
+_YOUTUBE_CLIENTS = [None, "web_safari", "ios", "android", "android_vr", "tv"]
 
 logging.getLogger("yt_dlp").setLevel(logging.CRITICAL)
 
@@ -35,36 +34,11 @@ _copied_cookie_db: Optional[str] = None
 
 def _copy_chrome_cookie_db() -> Optional[str]:
     """Copy Chrome's cookie SQLite DB to a temp file (avoids lock)."""
-    global _copied_cookie_db
-    if _copied_cookie_db and Path(_copied_cookie_db).exists():
-        return _copied_cookie_db
-
-    localapp = os.environ.get("LOCALAPPDATA", "")
-    candidates = [
-        Path(localapp) / "Google" / "Chrome" / "User Data" / "Default" / "Network" / "Cookies",
-        Path(localapp) / "Google" / "Chrome" / "User Data" / "Default" / "Cookies",
-    ]
-    for src in candidates:
-        if src.exists():
-            try:
-                tmp = Path(tempfile.gettempdir()) / f"chrome_cookies_{os.getpid()}.db"
-                shutil.copy2(str(src), str(tmp))
-                _copied_cookie_db = str(tmp)
-                return _copied_cookie_db
-            except Exception:
-                continue
-    return None
+    return copy_chrome_cookie_db()
 
 
 def _get_cookiefile() -> Optional[str]:
-    cookie_path = os.environ.get("YTDLP_COOKIES_PATH", "")
-    if cookie_path and Path(cookie_path).exists():
-        return cookie_path
-    for name in ["cookies.txt", "yt-dlp-cookies.txt"]:
-        p = config.ROOT_DIR / name
-        if p.exists():
-            return str(p)
-    return None
+    return get_cookiefile()
 
 
 def _normalize_url(url: str) -> str:
@@ -81,35 +55,40 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _youtube_extractor_args(client: Optional[str] = None) -> Optional[dict]:
+    youtube_args = {}
+    if client:
+        youtube_args["player_client"] = [client]
+    if config.YOUTUBE_PO_TOKEN:
+        youtube_args["po_token"] = [config.YOUTUBE_PO_TOKEN.strip()]
+    if config.YOUTUBE_VISITOR_DATA:
+        youtube_args["visitor_data"] = [config.YOUTUBE_VISITOR_DATA.strip()]
+    return {"youtube": youtube_args} if youtube_args else None
+
+
+def _youtube_strategy_label(client: Optional[str]) -> str:
+    return client or "default"
+
+
 def _build_opts(extra: dict = None, extractor_args: dict = None) -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
         "no_playlist": True,
         "extract_flat": False,
+        "socket_timeout": 60,
+        "retries": 20,
+        "fragment_retries": 20,
+        "file_access_retries": 5,
+        "extractor_retries": 5,
+        "continuedl": True,
         "http_headers": _BROWSER_HEADERS,
         "logger": logging.getLogger("yt_dlp"),
     }
     if extractor_args:
         opts["extractor_args"] = extractor_args
 
-    browser = config.COOKIES_BROWSER.strip().lower()
-
-    if browser == "chrome":
-        # Try to copy Chrome cookie DB first (no lock issue)
-        db_path = _copy_chrome_cookie_db()
-        if db_path:
-            # cookiesfrombrowser with explicit path to the copied DB
-            opts["cookiesfrombrowser"] = ("chrome", "Default", None, db_path)
-        else:
-            # Fall back to direct (may need Chrome closed)
-            opts["cookiesfrombrowser"] = ("chrome",)
-    elif browser:
-        opts["cookiesfrombrowser"] = (browser,)
-    else:
-        cf = _get_cookiefile()
-        if cf:
-            opts["cookiefile"] = cf
+    apply_cookie_options(opts)
 
     if extra:
         opts.update(extra)
@@ -121,6 +100,33 @@ def _is_auth_error(msg: str) -> bool:
     return any(t in msg for t in tests)
 
 
+def _is_drm_error(msg: str) -> bool:
+    text = (msg or "").lower()
+    return "drm protected" in text or "drm-protected" in text
+
+
+def _format_drm_error(platform: str = "YouTube") -> str:
+    return (
+        f"{platform} reports this video is DRM protected. "
+        "This downloader cannot bypass DRM or download protected streams. "
+        "Please choose a non-DRM video or use the platform's official offline/download option if available."
+    )
+
+
+def _is_download_retryable_error(msg: str) -> bool:
+    if _is_drm_error(msg):
+        return False
+    tests = [
+        "403", "Forbidden", "HTTP Error", "unable to download video data",
+        "Fresh cookies", "Sign in", "not a bot", "Requested format is not available",
+        "This video is unavailable", "timed out", "timeout", "ReadTimeout",
+        "ConnectionError", "HTTPSConnectionPool", "Max retries exceeded",
+        "Connection aborted", "Connection reset", "RemoteDisconnected",
+        "Temporary failure", "NameResolutionError", "SSLError",
+    ]
+    return any(t.lower() in (msg or "").lower() for t in tests)
+
+
 def _clean_ansi(text: str) -> str:
     return re.sub(r'\x1b\[[0-9;]*m', '', text)
 
@@ -129,6 +135,21 @@ def _format_cookie_help(platform: str) -> str:
     return (f"\n\n[{platform}] Requires browser cookies."
             f"\n  Make sure you are logged into {platform} in Chrome."
             f"\n  Or: export cookies.txt to {config.ROOT_DIR / 'cookies.txt'}")
+
+
+def _format_youtube_failure(last_error: str, requested_format: Optional[dict] = None) -> str:
+    requested = ""
+    if requested_format:
+        resolution = requested_format.get("resolution") or "selected quality"
+        ext = requested_format.get("ext") or ""
+        requested = f"The selected {resolution} {ext} format was not downgraded.\n"
+    return (
+        "YouTube download failed after trying multiple clients and fallback formats.\n"
+        f"{requested}"
+        f"Last error: {last_error}\n\n"
+        "Try updating yt-dlp, syncing fresh browser cookies, or configuring "
+        "YTDLP_YOUTUBE_PO_TOKEN and YTDLP_YOUTUBE_VISITOR_DATA in .env."
+    )
 
 
 def extract_info(url: str) -> dict:
@@ -148,16 +169,19 @@ def extract_info(url: str) -> dict:
     import yt_dlp
 
     last_error = None
-    strategies = _YOUTUBE_CLIENT_STRATEGIES if platform == "YouTube" else [{}]
+    clients = _YOUTUBE_CLIENTS if platform == "YouTube" else [None]
 
-    for strategy in strategies:
+    for client in clients:
         try:
-            with yt_dlp.YoutubeDL(_build_opts(extractor_args=strategy if strategy else None)) as ydl:
+            extractor_args = _youtube_extractor_args(client) if platform == "YouTube" else None
+            with yt_dlp.YoutubeDL(_build_opts(extractor_args=extractor_args)) as ydl:
                 info = ydl.extract_info(url, download=False)
             if info:
                 return _parse_info(info, url)
         except Exception as e:
             last_error = _clean_ansi(str(e))
+            if _is_drm_error(last_error):
+                raise RuntimeError(_format_drm_error(platform))
             if not _is_auth_error(last_error):
                 raise RuntimeError(last_error)
             continue
@@ -213,9 +237,13 @@ def _parse_info(info: dict, url: str) -> dict:
         dur_str = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
     wurl = info.get("webpage_url", url)
+    thumb = info.get("thumbnail")
+    # Bilibili CDN returns http:// thumbnails — force https for browser compatibility
+    if thumb and isinstance(thumb, str) and thumb.startswith("http://") and "hdslb.com" in thumb:
+        thumb = thumb.replace("http://", "https://", 1)
     return {
         "title": info.get("title", "Unknown"),
-        "thumbnail": info.get("thumbnail"),
+        "thumbnail": thumb,
         "duration": dur,
         "duration_str": dur_str,
         "platform": _detect_platform(wurl),
@@ -233,6 +261,20 @@ def _format_size(b: int) -> str:
     return f"{b} B"
 
 
+def _newest_media_file(since_ts: float, marker: Optional[str] = None) -> Optional[Path]:
+    exts = {".mp4", ".webm", ".mkv", ".mov"}
+    root = Path(config.DOWNLOAD_DIR)
+    candidates = [
+        p for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in exts and p.stat().st_mtime >= since_ts - 1
+    ]
+    if marker:
+        candidates = [p for p in candidates if marker in p.name]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def _detect_platform(url: str) -> str:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u: return "YouTube"
@@ -248,6 +290,65 @@ def _detect_platform(url: str) -> str:
     return "Other"
 
 
+def _height_from_format(fmt: Optional[dict]) -> Optional[int]:
+    if not fmt:
+        return None
+    resolution = str(fmt.get("resolution") or "")
+    match = re.search(r"(\d{3,4})p", resolution)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"\d+x(\d+)", resolution)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _dedupe(values: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _format_candidates(format_id: str, requested_format: Optional[dict], platform: str) -> List[str]:
+    selected = format_id or "bestvideo+bestaudio/best"
+    candidates = [selected]
+
+    if (
+        platform != "Douyin"
+        and "+" not in selected
+        and selected not in ("best", "bestvideo+bestaudio", "bestvideo+bestaudio/best")
+        and requested_format
+        and requested_format.get("video_only")
+    ):
+        candidates[0] = f"{selected}+bestaudio"
+
+    if platform == "YouTube":
+        if requested_format and str(requested_format.get("resolution", "")).lower().startswith("audio"):
+            candidates.append("bestaudio")
+        if not requested_format:
+            candidates.extend(["bestvideo+bestaudio/best", "best"])
+
+    return _dedupe(candidates)
+
+
+def _downloaded_format_matches(path: Path, task_id: str, requested_format: Optional[dict]) -> bool:
+    if not requested_format:
+        return True
+    requested_id = str(requested_format.get("format_id") or "")
+    if not requested_id:
+        return True
+    match = re.search(rf"\[{re.escape(task_id)}-[^\]]+-(?P<format_id>[^\]]+)\]", path.name)
+    if not match:
+        return False
+    downloaded_id = match.group("format_id")
+    downloaded_parts = set(downloaded_id.split("+"))
+    return requested_id in downloaded_parts
+
+
 async def _download_direct(direct_url: str, task_id: str) -> None:
     """Download a video from a direct URL using HTTP streaming."""
     import aiohttp
@@ -260,7 +361,7 @@ async def _download_direct(direct_url: str, task_id: str) -> None:
 
     # Derive filename from URL
     url_path = direct_url.split("?")[0]
-    fn = os.path.basename(url_path) or f"douyin_{task_id}.mp4"
+    fn = safe_filename(os.path.basename(url_path) or f"douyin_{task_id}.mp4", f"douyin_{task_id}.mp4")
     if not fn.endswith(".mp4"):
         fn += ".mp4"
     out_path = os.path.join(config.DOWNLOAD_DIR, fn)
@@ -328,7 +429,7 @@ async def _download_douyin_merged(video_url: str, audio_url: str, task_id: str) 
 
     video_path = os.path.join(config.DOWNLOAD_DIR, f"_video_{task_id}.mp4")
     audio_path = os.path.join(config.DOWNLOAD_DIR, f"_audio_{task_id}.mp3")
-    out_fn = f"douyin_{task_id}.mp4"
+    out_fn = safe_filename(f"douyin_{task_id}.mp4")
     out_path = os.path.join(config.DOWNLOAD_DIR, out_fn)
     tasks[task_id]["filename"] = out_fn
 
@@ -430,7 +531,14 @@ async def _download_douyin_merged(video_url: str, audio_url: str, task_id: str) 
                 try: os.remove(p)
                 except: pass
 
-async def download(url: str, format_id: str, task_id: str, video_urls=None, audio_urls=None) -> None:
+async def download(
+    url: str,
+    format_id: str,
+    task_id: str,
+    video_urls=None,
+    audio_urls=None,
+    requested_format: Optional[dict] = None,
+) -> None:
     import yt_dlp
 
     url = _normalize_url(url)
@@ -460,13 +568,18 @@ async def download(url: str, format_id: str, task_id: str, video_urls=None, audi
                               "speed": None, "eta": None, "filename": None, "filesize_str": None, "error": str(e)}
         return
 
-    if platform != "Douyin" and "+" not in format_id and format_id not in ("best", "bestvideo+bestaudio"):
+    if (
+        platform != "Douyin"
+        and not requested_format
+        and "+" not in format_id
+        and format_id not in ("best", "bestvideo+bestaudio", "bestvideo+bestaudio/best")
+    ):
         try:
             info = extract_info(url)
             for f in info.get("formats", []):
-                if f.get("format_id") == format_id:
-                    if f.get("video_only"):
-                        format_id = f"{format_id}+bestaudio/best"
+                fid = str(f.get("format_id", ""))
+                if fid == format_id:
+                    requested_format = f
                     break
         except Exception:
             pass
@@ -476,7 +589,7 @@ async def download(url: str, format_id: str, task_id: str, video_urls=None, audi
         "speed": None, "eta": None, "filename": None, "filesize_str": None, "error": None,
     }
 
-    tmpl = os.path.join(config.DOWNLOAD_DIR, "%(title).100s.%(ext)s")
+    tmpl = os.path.join(config.DOWNLOAD_DIR, f"%(title).100s [{task_id}-%(id)s-%(format_id)s].%(ext)s")
 
     def hook(d):
         if d["status"] == "downloading":
@@ -484,8 +597,8 @@ async def download(url: str, format_id: str, task_id: str, video_urls=None, audi
             dl = d.get("downloaded_bytes") or 0
             if total > 0:
                 tasks[task_id]["percent"] = round(dl / total * 100, 1)
-            tasks[task_id]["speed"] = d.get("_speed_str", "").strip()
-            tasks[task_id]["eta"] = d.get("_eta_str", "").strip()
+            tasks[task_id]["speed"] = _clean_ansi(d.get("_speed_str", "")).strip()
+            tasks[task_id]["eta"] = _clean_ansi(d.get("_eta_str", "")).strip()
             if total:
                 tasks[task_id]["filesize_str"] = _format_size(total)
         elif d["status"] == "finished":
@@ -494,25 +607,69 @@ async def download(url: str, format_id: str, task_id: str, video_urls=None, audi
             if fn:
                 tasks[task_id]["filename"] = os.path.basename(fn)
 
-    extra_opts = {
-        "format": format_id,
-        "outtmpl": tmpl,
-        "progress_hooks": [hook],
-    }
-    # Douyin CDN requires Referer
-    if platform == "Douyin":
-        extra_opts["http_headers"] = {**_BROWSER_HEADERS, "Referer": "https://www.douyin.com/"}
-    opts = _build_opts(extra=extra_opts)
+    format_candidates = _format_candidates(format_id, requested_format, platform)
+    clients = _YOUTUBE_CLIENTS if platform == "YouTube" else [None]
 
     def _run():
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            tasks[task_id]["status"] = "done"
-            tasks[task_id]["percent"] = 100.0
-        except Exception as e:
-            tasks[task_id]["status"] = "error"
-            tasks[task_id]["error"] = _clean_ansi(str(e))
+        last_error = ""
+        attempt = 0
+        for candidate in format_candidates:
+            for client in clients:
+                attempt += 1
+                label = _youtube_strategy_label(client)
+                tasks[task_id]["status"] = "downloading"
+                if attempt > 1:
+                    tasks[task_id]["error"] = f"Retrying YouTube download with {label} / {candidate}"
+
+                extra_opts = {
+                    "format": candidate,
+                    "outtmpl": tmpl,
+                    "progress_hooks": [hook],
+                    "writethumbnail": True,
+                }
+                if platform == "YouTube":
+                    extra_opts["http_chunk_size"] = 10 * 1024 * 1024
+                if platform == "Douyin":
+                    extra_opts["http_headers"] = {**_BROWSER_HEADERS, "Referer": "https://www.douyin.com/"}
+
+                extractor_args = _youtube_extractor_args(client) if platform == "YouTube" else None
+                opts = _build_opts(extra=extra_opts, extractor_args=extractor_args)
+                started_at = time.time()
+
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+                    final_file = _newest_media_file(started_at, marker=task_id)
+                    if requested_format and not final_file:
+                        raise RuntimeError("Selected format did not produce a completed output file")
+                    if final_file and not _downloaded_format_matches(final_file, task_id, requested_format):
+                        try:
+                            final_file.unlink()
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"Selected format {requested_format.get('format_id')} was downgraded to {final_file.name}"
+                        )
+                    if final_file:
+                        tasks[task_id]["filename"] = final_file.name
+                        tasks[task_id]["filesize_str"] = _format_size(final_file.stat().st_size)
+                    tasks[task_id]["status"] = "done"
+                    tasks[task_id]["percent"] = 100.0
+                    tasks[task_id]["error"] = None
+                    return
+                except Exception as e:
+                    last_error = _clean_ansi(str(e))
+                    if _is_drm_error(last_error):
+                        tasks[task_id]["status"] = "error"
+                        tasks[task_id]["error"] = _format_drm_error(platform)
+                        return
+                    if platform != "YouTube" or not _is_download_retryable_error(last_error):
+                        tasks[task_id]["status"] = "error"
+                        tasks[task_id]["error"] = last_error
+                        return
+
+        tasks[task_id]["status"] = "error"
+        tasks[task_id]["error"] = _format_youtube_failure(last_error or "Unknown error", requested_format)
 
     try:
         loop = asyncio.get_running_loop()

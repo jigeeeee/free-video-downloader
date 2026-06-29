@@ -170,3 +170,35 @@ def translate_prompt(text: str, target_lang: str = "zh") -> str:
 原文：
 
 {text}"""
+
+
+def rewrite_prompt(
+    title: str,
+    source_text: str,
+    style: str = "notes",
+    lang: str = "zh",
+) -> str:
+    style_map = {
+        "wechat": "微信公众号文章，结构清晰，有小标题，适合知识分享",
+        "xiaohongshu": "小红书笔记，口语化、重点突出、带行动建议",
+        "twitter": "Twitter/X thread，短句、多条连续观点",
+        "notes": "学习笔记，条理清晰，保留关键概念和结论",
+        "markdown": "Markdown 长文，适合归档和二次编辑",
+    }
+    lang_instruction = "请用中文输出。" if lang == "zh" else "Please write in English."
+    target_style = style_map.get(style, style_map["notes"])
+    return f"""你是一个内容编辑。请基于以下视频字幕/总结内容，改写成指定风格的可发布文本。
+
+标题：{title}
+输出风格：{target_style}
+{lang_instruction}
+
+要求：
+- 只基于原文信息，不要编造事实
+- 保留关键观点、数字、结论和可执行建议
+- 使用清晰标题和段落
+- 只输出改写后的正文
+
+原文：
+
+{source_text}"""

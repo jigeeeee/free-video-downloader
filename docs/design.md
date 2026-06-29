@@ -1,213 +1,220 @@
 ﻿# 万能视频下载器 — 方案设计文档
 
-> 版本: v1.0 | 日期: 2026-06-23 | 作者: AI + 人工审核
-
----
+> 版本: v1.2 | 日期: 2026-06-29
 
 ## 1. 技术选型
 
-| 层 | 技术 | 版本 | 理由 |
-|---|------|------|------|
-| 下载引擎 | yt-dlp | 2026.03.17 | 170k+ Star, 支持 1000+ 平台, 活跃维护 |
-| 后端框架 | FastAPI | 0.135.2 | 异步高性能, 自动 Swagger 文档, 轻量 |
-| 前端框架 | Vue 3 + Vite | latest | 组件化, 生态成熟, Vite HMR 极速开发 |
-| CSS 框架 | Tailwind CSS v4 | latest | 原子化 CSS, 自定义色板简便, 响应式内置 |
-| 进程管理 | uvicorn | latest | ASGI 服务器, 支持热重载 |
-| 运行环境 | Python 3.12 | 3.12.10 | 已安装, asyncio 特性完善 |
-
----
+| 层 | 技术 | 说明 |
+|---|---|---|
+| 下载引擎 | yt-dlp + 自研 Douyin 模块 | 通用平台走 yt-dlp，Douyin 走签名 API |
+| 后端框架 | FastAPI + uvicorn | 异步 API、Swagger 文档、轻量部署 |
+| 前端框架 | Vue 3 + Vite | 单页应用，开发体验好 |
+| CSS | Tailwind CSS v4 | 原子化样式和响应式布局 |
+| AI | DeepSeek + OpenAI-compatible SDK | 总结、问答、导图、翻译、改写 |
+| 转录 | OpenAI Whisper | 本地音视频转文字 |
+| 任务 | 内存 worker + asyncio.Semaphore | 单机并发控制 |
+| 持久化 | SQLite | 任务、文件历史、AI 结果 |
+| 音视频 | ffmpeg | 合并、转码、压缩、音频提取 |
+| Cookie | 统一 CookieManager | QR/synced/cookies.txt/browser 多来源 |
 
 ## 2. 系统架构
 
-```
-┌─────────────────────────────────────────────────┐
-│                    Browser                       │
-│         Vue 3 + Vite + Tailwind CSS              │
-│         localhost:5173 (dev) / static (prod)      │
-└─────────────────┬───────────────────────────────┘
-                  │ HTTP /api/*
-                  ▼
-┌─────────────────────────────────────────────────┐
-│              FastAPI (uvicorn)                    │
-│              localhost:8001                       │
-│  ┌───────────────────────────────────────────┐  │
-│  │  api.py                                    │  │
-│  │  POST /api/info      解析视频信息           │  │
-│  │  POST /api/download  提交下载任务           │  │
-│  │  GET  /api/progress  查询下载进度           │  │
-│  │  GET  /api/files     已下载文件列表         │  │
-│  │  DELETE /api/files   删除文件               │  │
-│  └──────────────┬────────────────────────────┘  │
-│                 │                                  │
-│  ┌──────────────▼────────────────────────────┐  │
-│  │  downloader.py                             │  │
-│  │  * extract_info() -> yt-dlp --dump-json     │  │
-│  │  * download()     -> asyncio subprocess     │  │
-│  │  * parse_progress() -> regex stdout         │  │
-│  └──────────────┬────────────────────────────┘  │
-│                 │                                  │
-│  ┌──────────────▼────────────────────────────┐  │
-│  │  models.py                                 │  │
-│  │  Pydantic: VideoInfo / FormatInfo / Task  │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────┐
-│              File System                          │
-│              downloads/                           │
-│              +-- video1.mp4                       │
-│              +-- video2.mkv                       │
-│              +-- ...                              │
-└─────────────────────────────────────────────────┘
+```text
+Browser / Vue 3
+  ├─ URLInput / VideoPreview / FormatSelector
+  ├─ AiPanel: 字幕、总结、导图、问答、改写
+  ├─ VideoLibrary: 文件库、播放、删除、转换入口
+  └─ TaskCenter: 任务状态、历史、失败重试
+          │ HTTP /api/*
+          ▼
+FastAPI backend
+  ├─ api.py              路由编排
+  ├─ queue.py            内存任务 worker + 并发控制
+  ├─ storage.py          SQLite 持久化
+  ├─ downloader.py       yt-dlp 与平台路由
+  ├─ douyin/             XBogus + ABogus 签名
+  ├─ subtitle.py         字幕提取
+  ├─ ai.py/prompts.py    DeepSeek 能力
+  ├─ transcribe.py       Whisper 子进程
+  ├─ media.py            ffmpeg 转换 + 安全路径
+  ├─ cookies.py          Cookie 统一选择/同步
+  └─ startup_checks.py   依赖检查
+          │
+          ▼
+downloads/
+  ├─ 视频/音频文件
+  ├─ subtitles/
+  ├─ uploads/
+  ├─ synced_cookies.txt
+  └─ video_downloader.db
 ```
 
----
+## 3. 核心数据流
 
-## 3. 数据流
+### 3.1 下载链路
 
-```
-用户输入 URL
-    │
-    ▼
-POST /api/info { url }
-    │
-    ▼
-downloader.extract_info(url)
-    │  yt-dlp --dump-json -> parse JSON
-    ▼
-{ title, thumbnail, duration, formats[], platform }
-    │
-    ▼
-用户选择 format_id
-    │
-    ▼
-POST /api/download { url, format_id }
-    │
-    ▼
-downloader.download(url, format_id, task_id)
-    │  asyncio.create_subprocess_exec(yt-dlp, ...)
-    │  parse stdout: "[download]  45.2% of ~50MiB at 2.1MiB/s ETA 00:13"
-    │  update tasks[task_id] dict
-    ▼
-GET /api/progress/{task_id}  <-- 前端轮询 (1s interval)
-    │
-    ▼
-{ percent: 45.2, speed: "2.1MiB/s", eta: "00:13", status: "downloading" }
-    │
-    ▼
-status -> "done" -> 前端展示完成弹窗
+```text
+POST /api/info
+  → downloader.extract_info(url)
+  → 返回标题、封面、时长、格式
+
+POST /api/download
+  → queue.enqueue(download)
+  → downloader.download()
+  → yt-dlp 或 Douyin 专用下载
+  → 进度写入内存 tasks + SQLite
+  → 完成后文件写入 downloads/，文件记录写入 SQLite
+
+GET /api/progress/{task_id}
+  → 优先读取下载实时进度
+  → 同步写回 SQLite
 ```
 
----
+### 3.2 AI 链路
 
-## 4. 前端组件树
-
+```text
+URL
+  → subtitle.extract_subtitles()
+  → transcript text
+  → DeepSeek: summary / mindmap / ask / rewrite / translate
+  → ai_results 写入 SQLite
 ```
+
+目前策略是字幕优先。后续缺字幕时应补“下载音频 → Whisper 转录 → AI”的 fallback。
+
+### 3.3 转换链路
+
+```text
+POST /api/convert
+  → queue.enqueue(convert)
+  → media.convert_media()
+  → ffmpeg 输出新文件
+  → 文件记录写入 SQLite
+```
+
+## 4. API 设计总览
+
+当前注册 33 个 `/api` 路由。
+
+### 基础与任务
+
+- `GET /api/health`
+- `GET /api/tasks`
+- `GET /api/tasks/{task_id}`
+- `POST /api/tasks/{task_id}/retry`
+- `GET /api/history`
+
+### 下载与文件
+
+- `POST /api/info`
+- `POST /api/download`
+- `GET /api/progress/{task_id}`
+- `GET /api/files`
+- `DELETE /api/files/{filename}`
+- `GET /api/download/{filename}`
+- `POST /api/batch`
+- `GET /api/batch/{batch_id}`
+
+### AI 与字幕
+
+- `POST /api/subtitles`
+- `GET /api/subtitles/{task_id}`
+- `POST /api/summary`
+- `GET /api/summary/{task_id}`
+- `POST /api/mindmap`
+- `GET /api/mindmap/{task_id}`
+- `POST /api/ask`
+- `GET /api/ask/{task_id}`
+- `POST /api/translate`
+- `POST /api/rewrite`
+- `GET /api/rewrite/{task_id}`
+- `POST /api/transcribe`
+- `GET /api/transcribe/{task_id}`
+
+### 转换与 Cookie
+
+- `POST /api/convert`
+- `GET /api/convert/{task_id}`
+- `GET|POST /api/bilibili/qrcode`
+- `GET /api/bilibili/qrcode/status`
+- `GET /api/bilibili/status`
+- `POST /api/cookies/sync`
+
+## 5. 数据模型
+
+### tasks
+
+| 字段 | 说明 |
+|---|---|
+| `task_id` | 任务 ID |
+| `task_type` | download/subtitle/summary/mindmap/ask/transcribe/convert/rewrite |
+| `status` | queued/processing/done/error |
+| `percent` | 进度 |
+| `result` | JSON 结果 |
+| `error` | 错误信息 |
+| `metadata` | 原始任务参数 |
+| `created_at` / `updated_at` | 时间戳 |
+
+### files
+
+保存已下载或转换生成的文件名、大小、路径、缩略图和时间。
+
+### ai_results
+
+保存 AI 任务结果：summary、mindmap、ask、rewrite 等。
+
+## 6. 前端组件树
+
+```text
 App.vue
-+-- HeroSection.vue          # 渐变蓝 Hero + 特性标签
-+-- URLInput.vue             # rounded-full 胶囊搜索栏
-+-- VideoPreview.vue         # 封面/标题/时长/平台 icon 卡片
-│   +-- FormatSelector.vue   # 4K/1080p/720p/MP3 质量标签
-+-- DownloadCard.vue         # 进度条 + 速度/ETA + 完成弹窗
-+-- VideoLibrary.vue         # Masonry 瀑布流视频库
+├── HeroSection.vue
+├── URLInput.vue
+├── VideoPreview.vue
+├── AiPanel.vue
+│   ├── 字幕
+│   ├── AI 总结
+│   ├── 思维导图
+│   ├── 问答
+│   └── 内容改写
+├── FormatSelector.vue
+├── DownloadCard.vue
+├── VideoLibrary.vue
+│   ├── 播放/下载
+│   ├── 删除
+│   ├── 提取 MP3
+│   └── 压缩 MP4
+└── TaskCenter.vue
+    ├── 任务列表
+    ├── 进度展示
+    ├── 失败重试
+    └── 最近 AI 结果
 ```
 
----
+## 7. 安全设计
 
-## 5. 设计对标（ai.codefather.cn）
+- 文件读取和删除必须通过 `resolve_download_file()`，拒绝路径分隔符和目录穿越。
+- 上传转录只允许媒体扩展名，并受 `MAX_UPLOAD_MB` 限制。
+- Cookie 同步保存为 Netscape 格式文件，不在 API 响应中展开 Cookie 内容。
+- `.env`、`cookies.txt`、`downloads/` 已在 `.gitignore` 中排除。
 
-| 设计要素 | 值 |
-|---------|-----|
-| 主色 | `#3a5df9` (蓝) |
-| 辅色 | `#ffb801` (金/收藏) |
-| 背景 | `#ffffff` |
-| 卡片 | `rounded-xl` + `ring-1 ring-slate-200/50` |
-| 卡片 Hover | `shadow-2xl` + blue tint |
-| 搜索栏 | `rounded-full` 胶囊 |
-| 按钮 | `rounded-full` + `bg-primary hover:opacity-80` |
-| 标签 | `rounded-full bg-black/40 backdrop-blur-xl text-white` |
-| 加载 | `animate-pulse` 骨架屏 |
-| 布局 | Masonry `columns-2 md:columns-3 lg:columns-4` |
-| 字体 | 系统默认 + MiSans (可选) |
-
----
-
-## 6. API 设计
-
-### POST /api/info
-```
-Request:  { "url": "https://www.youtube.com/watch?v=xxx" }
-Response: {
-  "title": "...",
-  "thumbnail": "https://...",
-  "duration": 1234,
-  "platform": "YouTube",
-  "uploader": "...",
-  "formats": [
-    { "format_id": "137+140", "resolution": "1080p", "ext": "mp4", "filesize": 52428800 },
-    { "format_id": "140", "resolution": "audio only", "ext": "m4a", "filesize": 3145728 }
-  ]
-}
-```
-
-### POST /api/download
-```
-Request:  { "url": "...", "format_id": "137+140" }
-Response: { "task_id": "uuid-xxxx", "status": "queued" }
-```
-
-### GET /api/progress/{task_id}
-```
-Response: {
-  "task_id": "uuid-xxxx",
-  "percent": 45.2,
-  "speed": "2.1MiB/s",
-  "eta": "00:13",
-  "status": "downloading" | "done" | "error",
-  "filename": "video.mp4",
-  "error": null
-}
-```
-
-### GET /api/files
-```
-Response: {
-  "files": [
-    { "name": "video.mp4", "size": 52428800, "date": "2026-06-23T..." }
-  ]
-}
-```
-
----
-
-## 7. 配置说明 (config.py)
+## 8. 配置说明
 
 ```python
-DOWNLOAD_DIR = "./downloads"        # 下载输出目录
-MAX_CONCURRENT = 2                  # 最大并发下载数
-DEFAULT_FORMAT = "bestvideo+bestaudio"  # 默认格式
+DOWNLOAD_DIR = "./downloads"
+SUBTITLE_DIR = "./downloads/subtitles"
+DB_PATH = "./downloads/video_downloader.db"
+MAX_CONCURRENT = 2
+MAX_UPLOAD_MB = 500
 HOST = "0.0.0.0"
 PORT = 8001
+YTDLP_COOKIES_BROWSER = ""
 ```
 
----
-
-## 8. 启动方式
+## 9. 验证方式
 
 ```bash
-# 1. 安装依赖
-pip install fastapi uvicorn yt-dlp python-dotenv
-
-# 2. 启动后端
-python main.py
-# -> FastAPI 运行在 http://localhost:8001
-# -> API 文档: http://localhost:8001/docs
-
-# 3. 启动前端（开发模式）
-cd frontend
-npm install
-npm run dev
-# -> Vite 运行在 http://localhost:5173
-# -> /api/* 自动 proxy 到 localhost:8001
+python -m compileall main.py config.py backend
+cd frontend && npm run build
 ```
+
+已额外验证：YouTube 解析、字幕提取、下载、DeepSeek 翻译/改写、ffmpeg 转换、路径安全。

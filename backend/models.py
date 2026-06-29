@@ -51,6 +51,7 @@ class FileInfo(BaseModel):
     size: int
     size_str: str
     date: str
+    thumbnail: Optional[str] = None
 
 
 class FileListResponse(BaseModel):
@@ -122,6 +123,7 @@ class SummaryResult(BaseModel):
     tags: List[str] = []
     video_title: str = ""
     tokens_used: Optional[dict] = None
+    error: Optional[str] = None
 
 
 class SummaryTask(BaseModel):
@@ -226,3 +228,57 @@ class TranslateResponse(BaseModel):
     translated_text: str
     target_lang: str
     tokens_used: Optional[dict] = None
+
+
+# ── Unified task/history and add-on feature models ───────────────────────
+
+class TaskRecordResponse(BaseModel):
+    task_id: str
+    task_type: str
+    status: str
+    percent: float = 0.0
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    metadata: Optional[dict] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class TaskListResponse(BaseModel):
+    tasks: List[TaskRecordResponse] = []
+
+
+class HistoryResponse(BaseModel):
+    files: List[dict] = []
+    ai_results: List[dict] = []
+
+
+class ConvertRequest(BaseModel):
+    filename: str
+    target_format: str = "mp3"
+    mode: str = "audio"              # audio | convert | compress
+    bitrate: Optional[str] = None
+
+
+class ConvertTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class RewriteRequest(BaseModel):
+    url: Optional[str] = None
+    title: str = ""
+    text: Optional[str] = None
+    style: str = "notes"             # wechat | xiaohongshu | twitter | notes | markdown
+    lang: str = "zh"
+
+
+class RewriteTask(BaseModel):
+    task_id: str
+    status: str = "queued"
+    percent: float = 0.0
+    result: Optional[dict] = None
+    error: Optional[str] = None

@@ -7,6 +7,7 @@ import FormatSelector from "./components/FormatSelector.vue"
 import DownloadCard from "./components/DownloadCard.vue"
 import VideoLibrary from "./components/VideoLibrary.vue"
 import AiPanel from "./components/AiPanel.vue"
+import TaskCenter from "./components/TaskCenter.vue"
 
 const videoInfo = ref(null)
 const isLoading = ref(false)
@@ -176,6 +177,8 @@ const statusText = computed(() => {
       <div class="mt-16">
         <VideoLibrary />
       </div>
+
+      <TaskCenter />
     </main>
 
     <footer class="border-t border-slate-100 py-8 text-center text-xs text-slate-400">

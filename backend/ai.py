@@ -61,7 +61,7 @@ async def summarize_video(
     """
     client = _get_client()
     model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    prompt = summarize_prompt(title, subtitle_text, lang)
+    prompt = summarize_prompt(title, _trim_text(subtitle_text), lang)
 
     resp = await client.chat.completions.create(
         model=model_name,
@@ -71,7 +71,8 @@ async def summarize_video(
     )
 
     content = resp.choices[0].message.content or ""
-    return _parse_json_response(content)
+    parsed = _parse_json_response(content)
+    return _normalize_summary(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,7 @@ async def ask_video(
     """
     client = _get_client()
     model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    prompt = question_prompt(title, subtitle_text, question, chat_history, lang)
+    prompt = question_prompt(title, _trim_text(subtitle_text), question, chat_history, lang)
 
     resp = await client.chat.completions.create(
         model=model_name,
@@ -188,7 +189,7 @@ async def generate_mindmap(
 
     client = _get_client()
     model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    prompt = mindmap_prompt(title, subtitle_text, lang)
+    prompt = mindmap_prompt(title, _trim_text(subtitle_text), lang)
 
     resp = await client.chat.completions.create(
         model=model_name,
@@ -224,6 +225,29 @@ def _extract_mermaid_block(text: str) -> str:
     return text.strip()
 
 
+def _trim_text(text: str, max_chars: int = 24000) -> str:
+    """Keep LLM prompts bounded while preserving beginning and ending context."""
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    head = text[: max_chars // 2]
+    tail = text[-max_chars // 2 :]
+    return f"{head}\n\n...[middle omitted for length]...\n\n{tail}"
+
+
+def _normalize_summary(data: Dict[str, Any]) -> Dict[str, Any]:
+    chapters = data.get("chapters") if isinstance(data.get("chapters"), list) else []
+    key_points = data.get("key_points") if isinstance(data.get("key_points"), list) else []
+    tags = data.get("tags") if isinstance(data.get("tags"), list) else []
+    return {
+        **data,
+        "one_liner": str(data.get("one_liner") or ""),
+        "chapters": chapters,
+        "key_points": [str(item) for item in key_points],
+        "tags": [str(item) for item in tags],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Subtitle translation
 # ---------------------------------------------------------------------------
@@ -241,7 +265,7 @@ async def translate_subtitles(
 
     client = _get_client()
     model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    prompt = translate_prompt(subtitle_text, target_lang)
+    prompt = translate_prompt(_trim_text(subtitle_text, 30000), target_lang)
 
     resp = await client.chat.completions.create(
         model=model_name,
@@ -256,6 +280,40 @@ async def translate_subtitles(
     return {
         "translated_text": content.strip(),
         "target_lang": target_lang,
+        "tokens_used": {
+            "input": usage.prompt_tokens if usage else 0,
+            "output": usage.completion_tokens if usage else 0,
+        },
+    }
+
+
+async def rewrite_content(
+    title: str,
+    source_text: str,
+    style: str = "notes",
+    lang: str = "zh",
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Rewrite transcript/summary content into an editorial format."""
+    from backend.prompts import rewrite_prompt
+
+    client = _get_client()
+    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    prompt = rewrite_prompt(title, _trim_text(source_text), style, lang)
+
+    resp = await client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        max_tokens=4096,
+    )
+
+    content = resp.choices[0].message.content or ""
+    usage = resp.usage
+    return {
+        "title": title,
+        "style": style,
+        "content": content.strip(),
         "tokens_used": {
             "input": usage.prompt_tokens if usage else 0,
             "output": usage.completion_tokens if usage else 0,

@@ -6,7 +6,7 @@ const props = defineProps({
   title: String,
 })
 
-const activeTab = ref(null) // 'summary' | 'subtitles' | 'mindmap' | 'ask'
+const activeTab = ref(null) // 'summary' | 'subtitles' | 'mindmap' | 'ask' | 'rewrite'
 const isLoading = ref(false)
 const error = ref(null)
 
@@ -18,6 +18,8 @@ const askQuestion = ref("")
 const askAnswer = ref(null)
 const askHistory = ref([])
 const showAll = ref({})  // { lang: bool } — per language expand state
+const rewriteStyle = ref("notes")
+const rewriteResult = ref(null)
 
 // Reset when URL changes
 watch(() => props.url, () => {
@@ -27,6 +29,7 @@ watch(() => props.url, () => {
   mindmapResult.value = null
   askAnswer.value = null
   askHistory.value = []
+  rewriteResult.value = null
   error.value = null
 })
 
@@ -153,6 +156,37 @@ async function submitAsk() {
   }
 }
 
+async function loadRewrite() {
+  activeTab.value = "rewrite"
+  if (rewriteResult.value) return
+  isLoading.value = true
+  error.value = null
+  try {
+    const source = summaryResult.value
+      ? [summaryResult.value.one_liner, ...(summaryResult.value.key_points || [])].filter(Boolean).join("\n")
+      : ""
+    const res = await fetch("/api/rewrite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: props.url,
+        title: props.title,
+        text: source || null,
+        style: rewriteStyle.value,
+        lang: "zh",
+      }),
+    })
+    if (!res.ok) throw new Error((await res.json()).detail || "Rewrite failed")
+    const { task_id } = await res.json()
+    rewriteResult.value = await pollUntil("rewrite", task_id)
+  } catch (e) {
+    error.value = e.message
+    activeTab.value = null
+  } finally {
+    isLoading.value = false
+  }
+}
+
 async function runAi(endpoint, setter) {
   isLoading.value = true
   error.value = null
@@ -185,9 +219,10 @@ async function runAi(endpoint, setter) {
           { key: 'subtitles', icon: '💬', label: '字幕' },
           { key: 'mindmap',   icon: '🧠', label: '思维导图' },
           { key: 'ask',       icon: '💡', label: '问答' },
+          { key: 'rewrite',   icon: '✍', label: '改写' },
         ]"
         :key="tab.key"
-        @click="tab.key === 'summary' ? loadSummary() : tab.key === 'subtitles' ? loadSubtitles() : tab.key === 'mindmap' ? loadMindmap() : (activeTab = 'ask')"
+        @click="tab.key === 'summary' ? loadSummary() : tab.key === 'subtitles' ? loadSubtitles() : tab.key === 'mindmap' ? loadMindmap() : tab.key === 'rewrite' ? loadRewrite() : (activeTab = 'ask')"
         class="flex-1 px-3 py-3.5 text-sm font-medium transition-all duration-200 border-b-2 -mb-px"
         :class="activeTab === tab.key
           ? 'text-[#3a5df9] border-[#3a5df9] bg-blue-50/30'
@@ -217,6 +252,13 @@ async function runAi(endpoint, setter) {
 
       <!-- ── AI Summary ──────────────────────────────────────── -->
       <div v-else-if="activeTab === 'summary' && summaryResult" class="space-y-4">
+        <!-- Error message -->
+        <div v-if="summaryResult.error" class="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-700">
+          ⚠️ {{ summaryResult.error }}
+          <p class="mt-2 text-xs text-amber-500">
+            提示：Bilibili 部分视频没有可提取的字幕轨道，可尝试 YouTube 视频测试 AI 功能。
+          </p>
+        </div>
         <div class="p-4 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100">
           <p class="text-xs text-blue-400 font-medium mb-1">一句话总结</p>
           <p class="text-base font-semibold text-slate-800">{{ summaryResult.one_liner }}</p>
@@ -366,6 +408,30 @@ async function runAi(endpoint, setter) {
             发送
           </button>
         </div>
+      </div>
+
+      <div v-else-if="activeTab === 'rewrite'" class="space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            v-for="style in [
+              { key: 'notes', label: '学习笔记' },
+              { key: 'wechat', label: '公众号' },
+              { key: 'xiaohongshu', label: '小红书' },
+              { key: 'twitter', label: 'Thread' },
+              { key: 'markdown', label: 'Markdown' },
+            ]"
+            :key="style.key"
+            @click="rewriteStyle = style.key; rewriteResult = null; loadRewrite()"
+            class="px-3 py-1.5 rounded-full text-xs transition-colors"
+            :class="rewriteStyle === style.key ? 'bg-[#3a5df9] text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'"
+          >
+            {{ style.label }}
+          </button>
+        </div>
+        <pre
+          v-if="rewriteResult"
+          class="text-sm text-slate-700 whitespace-pre-wrap font-sans leading-relaxed bg-slate-50 rounded-xl p-4 max-h-[520px] overflow-y-auto"
+        >{{ rewriteResult.content }}</pre>
       </div>
     </div>
   </div>

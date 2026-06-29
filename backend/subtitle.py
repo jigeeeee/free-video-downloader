@@ -260,26 +260,24 @@ def _build_subtitle_opts(
     download: bool = False,
     languages: Optional[List[str]] = None,
 ) -> dict:
-    """Build yt-dlp options for subtitle extraction.
+    """Build yt-dlp options for subtitle extraction."""
+    from backend.cookies import apply_cookie_options
+    from backend.downloader import _BROWSER_HEADERS
 
-    When download=False: just fetch metadata (info stage).
-    When download=True:  actually download and convert subtitle files.
-    """
     opts = {
         "quiet": True,
         "no_warnings": True,
         "no_playlist": True,
         "extract_flat": False,
-        "skip_download": True,           # Never download the video itself
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-        },
+        "skip_download": True,
+        "http_headers": {**_BROWSER_HEADERS, "Referer": "https://www.bilibili.com/"},
         "logger": __import__("logging").getLogger("yt_dlp"),
     }
 
+    # Cookie support — same logic as downloader
+    apply_cookie_options(opts)
+
     if not download:
-        # Info-only: don't write anything, just return metadata
         opts["writesubtitles"] = False
         opts["writeautomaticsub"] = False
         return opts
@@ -290,17 +288,11 @@ def _build_subtitle_opts(
         opts["paths"] = {"home": out_dir}
 
     opts["writesubtitles"] = True
-    opts["writeautomaticsub"] = True     # auto-generated captions
-    opts["subtitlesformat"] = "srt/vtt/ass"  # prefer srt
-    opts["convertsubtitles"] = "srt"     # convert everything to srt
+    opts["writeautomaticsub"] = True
+    opts["subtitlesformat"] = "srt/vtt/ass"
+    opts["convertsubtitles"] = "srt"
 
     if languages:
         opts["subtitleslangs"] = languages
-
-    # Cookie support (same logic as downloader.py)
-    from backend.downloader import _get_cookiefile
-    cf = _get_cookiefile()
-    if cf:
-        opts["cookiefile"] = cf
 
     return opts

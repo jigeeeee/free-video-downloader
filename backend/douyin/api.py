@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from backend.cookies import copy_chrome_cookie_db, get_cookiefile
 from backend.douyin.xbogus import XBogus
 from backend.douyin.abogus import ABogus, BrowserFingerprintGenerator
 
@@ -25,29 +26,56 @@ _fp = BrowserFingerprintGenerator.generate_fingerprint("Chrome")
 _ab = ABogus(fp=_fp, user_agent=UA)
 
 
+def _try_auto_extract_cookies() -> Dict[str, str]:
+    """Try to extract Douyin cookies from Chrome's cookie DB (Chrome must be closed)."""
+    import sqlite3
+    try:
+        db_path = copy_chrome_cookie_db()
+        if not db_path:
+            return {}
+        con = sqlite3.connect(db_path)
+        rows = con.execute("SELECT host_key, name, encrypted_value FROM cookies WHERE host_key LIKE '%douyin.com%'").fetchall()
+        con.close()
+        result = {}
+        for domain, name, ev in rows:
+            try:
+                # Only use DPAPI-decryptable cookies (v10)
+                if ev[:3] == b"v10":
+                    import win32crypt
+                    value = win32crypt.CryptUnprotectData(ev[3:], None, None, None, 0)[1].decode("utf-8", errors="replace")
+                    result[name] = value
+            except Exception:
+                pass
+        logger.info("Auto-extracted %d Douyin cookies from Chrome", len(result))
+        return result
+    except Exception as e:
+        logger.warning("Auto-extract Douyin cookies failed: %s", e)
+        return {}
+
+
 def _get_cookies() -> Dict[str, str]:
     cookies = {}
-    cookie_file = None
-    for name in ["cookies.txt", "yt-dlp-cookies.txt"]:
-        p = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / name
-        if p.exists():
-            cookie_file = p
-            break
-    if not cookie_file:
-        return cookies
+    cookie_files = []
 
-    with open(cookie_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 7:
-                domain = parts[0]
-                name = parts[5]
-                value = parts[6]
-                if "douyin.com" in domain:
-                    cookies[name] = value
+    cookiefile = get_cookiefile()
+    if cookiefile:
+        cookie_files.append(cookiefile)
+
+    for cookie_file in cookie_files:
+        if not Path(cookie_file).exists():
+            continue
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    domain = parts[0]
+                    name = parts[5]
+                    value = parts[6]
+                    if "douyin.com" in domain:
+                        cookies[name] = value
     return cookies
 
 
@@ -120,8 +148,19 @@ def extract_info(url: str) -> dict:
 
     if not resp.text or not resp.text.strip():
         if not cookies:
-            raise RuntimeError("Douyin requires cookies. Export cookies.txt from browser (login to douyin.com).")
-        raise RuntimeError("Douyin API returned empty response. Cookies may be expired. Re-export cookies.txt.")
+            # Try to auto-extract cookies from Chrome
+            cookies = _try_auto_extract_cookies()
+            if cookies:
+                # Retry once with fresh cookies
+                resp2 = requests.get(signed_url, headers=headers, cookies=cookies, timeout=15)
+                if resp2.status_code == 200 and resp2.text.strip():
+                    resp = resp2
+                else:
+                    raise RuntimeError("Douyin requires cookies. Click '绑定B站' to login, or export cookies.txt from browser (login to douyin.com).")
+            else:
+                raise RuntimeError("Douyin requires cookies. Export cookies.txt from browser (login to douyin.com).")
+        else:
+            raise RuntimeError("Douyin API returned empty response. Cookies may be expired. Re-export cookies.txt.")
 
     try:
         data = resp.json()

@@ -3,6 +3,7 @@ import { ref, onMounted } from "vue"
 
 const files = ref([])
 const loading = ref(false)
+const converting = ref({})
 
 async function loadFiles() {
   loading.value = true
@@ -28,6 +29,21 @@ async function deleteFile(name) {
 
 function openFile(name) {
   window.open(`/api/download/${encodeURIComponent(name)}`, "_blank")
+}
+
+async function convertFile(name, mode, target_format) {
+  converting.value[name] = true
+  try {
+    await fetch("/api/convert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: name, mode, target_format }),
+    })
+  } catch (e) {
+    console.error("Convert failed:", e)
+  } finally {
+    converting.value[name] = false
+  }
 }
 
 onMounted(loadFiles)
@@ -70,7 +86,13 @@ onMounted(loadFiles)
       >
         <!-- Thumbnail area -->
         <div class="aspect-video bg-slate-100 flex items-center justify-center text-3xl relative overflow-hidden">
-          <span class="transition-transform duration-500 group-hover:scale-110">🎬</span>
+          <img
+            v-if="f.thumbnail"
+            :src="f.thumbnail"
+            class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            loading="lazy"
+          />
+          <span v-else class="transition-transform duration-500 group-hover:scale-110">🎬</span>
           <div
             class="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100"
           ></div>
@@ -85,14 +107,31 @@ onMounted(loadFiles)
           </h3>
           <div class="flex items-center justify-between mt-2">
             <span class="text-xs text-slate-500">{{ f.size_str }}</span>
-            <button
-              @click.stop="deleteFile(f.name)"
-              class="text-xs text-slate-400 hover:text-red-500 transition-colors"
-              title="删除"
-            >
-              🗑
-            </button>
+            <div class="flex items-center gap-2">
+              <button
+                @click.stop="convertFile(f.name, 'audio', 'mp3')"
+                class="text-xs text-slate-400 hover:text-[#3a5df9] transition-colors"
+                title="提取 MP3"
+              >
+                MP3
+              </button>
+              <button
+                @click.stop="convertFile(f.name, 'compress', 'mp4')"
+                class="text-xs text-slate-400 hover:text-[#3a5df9] transition-colors"
+                title="压缩 MP4"
+              >
+                压缩
+              </button>
+              <button
+                @click.stop="deleteFile(f.name)"
+                class="text-xs text-slate-400 hover:text-red-500 transition-colors"
+                title="删除"
+              >
+                🗑
+              </button>
+            </div>
           </div>
+          <p v-if="converting[f.name]" class="text-[11px] text-[#3a5df9] mt-2">已提交转换任务，可在任务中心查看</p>
         </div>
       </div>
     </div>
