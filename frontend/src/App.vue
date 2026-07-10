@@ -8,6 +8,7 @@ import DownloadCard from "./components/DownloadCard.vue"
 import VideoLibrary from "./components/VideoLibrary.vue"
 import AiPanel from "./components/AiPanel.vue"
 import TaskCenter from "./components/TaskCenter.vue"
+import CookieStatus from "./components/CookieStatus.vue"
 
 const videoInfo = ref(null)
 const isLoading = ref(false)
@@ -118,6 +119,8 @@ const statusText = computed(() => {
       <div class="relative -mt-16 mb-8">
         <URLInput @submit="fetchInfo" :loading="isLoading" />
       </div>
+
+      <CookieStatus />
 
       <!-- Error display with pre-formatted cookie help -->
       <div v-if="error" class="mb-8 p-5 rounded-xl bg-amber-50 border border-amber-200">

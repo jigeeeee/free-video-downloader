@@ -104,7 +104,8 @@ cp .env.example .env
 # 4. 配置 Cookie（Bilibili / Douyin 常用）
 # 方式 A：导出 cookies.txt 放到项目根目录
 # 方式 B：使用 Bilibili 扫码登录接口
-# 方式 C：安装 chrome-extension，同步浏览器 Cookie 到后端
+# 方式 C：安装 chrome-extension，自动同步 YouTube/Bilibili/Douyin Cookie 到后端
+# 方式 D：设置 YTDLP_COOKIES_BROWSER=chrome/edge/firefox/brave 作为备用读取方式
 
 # 5. 启动后端
 python main.py
@@ -118,6 +119,29 @@ npm run dev
 # http://localhost:5173
 ```
 
+## Testing
+
+```powershell
+# 后端单元测试（不访问真实平台）
+python -m pytest
+
+# 后端静态编译检查
+python -m compileall main.py config.py backend
+
+# 前端生产构建检查
+cd frontend
+npm run build
+```
+
+真实平台回归默认跳过，避免日常测试依赖网络和 Cookie。需要验证时设置对应 URL 后再运行：
+
+```powershell
+$env:LIVE_YOUTUBE_URL="https://www.youtube.com/watch?v=..."
+$env:LIVE_BILIBILI_URL="https://www.bilibili.com/video/..."
+$env:LIVE_DOUYIN_URL="https://www.douyin.com/video/..."
+python -m pytest -m live
+```
+
 ## Configuration
 
 | 变量 | 默认值 | 说明 |
@@ -129,7 +153,10 @@ npm run dev
 | `PORT` | `8002` | 后端端口 |
 | `MAX_CONCURRENT` | `2` | 并发任务数 |
 | `MAX_UPLOAD_MB` | `500` | 上传转录文件大小限制 |
-| `YTDLP_COOKIES_BROWSER` | 空 | 空=优先 QR/synced/cookies.txt；也可设 `chrome/firefox/brave` |
+| `YTDLP_COOKIES_BROWSER` | 空 | 空=优先平台同步 Cookie；也可设 `chrome/edge/firefox/brave` 作为备用 |
+| `YTDLP_YOUTUBE_COOKIES_PATH` | 空 | 可选 YouTube 专属 Netscape Cookie 文件 |
+| `YTDLP_BILIBILI_COOKIES_PATH` | 空 | 可选 Bilibili 专属 Netscape Cookie 文件 |
+| `YTDLP_DOUYIN_COOKIES_PATH` | 空 | 可选 Douyin 专属 Netscape Cookie 文件 |
 | `YTDLP_YOUTUBE_PO_TOKEN` | 空 | 可选 YouTube PO Token，例如 `web.gvs+TOKEN_VALUE` |
 | `YTDLP_YOUTUBE_VISITOR_DATA` | 空 | 可选 YouTube Visitor Data，部分 PO Token 场景需要 |
 | `DEEPSEEK_API_KEY` | 空 | AI 功能 API Key |
@@ -138,7 +165,7 @@ npm run dev
 
 ### YouTube 403 Notes
 
-如果 YouTube 解析成功但下载时报 `HTTP Error 403: Forbidden`，后端会自动按 `default -> web_safari -> ios -> android -> android_vr -> tv` 切换客户端，并尝试同清晰度或更低清晰度 fallback。若仍失败，通常需要刷新 Cookie、升级 yt-dlp，或在 `.env` 配置：
+如果 YouTube 解析成功但下载时报 `HTTP Error 403: Forbidden`，后端会自动按 `default -> web_safari -> ios -> android -> android_vr -> tv` 切换客户端。用户明确选择某个清晰度/格式时不会静默降级，避免出现“点 1080p 实际下到低清”的情况。若仍失败，通常需要刷新 Cookie、升级 yt-dlp，或在 `.env` 配置：
 
 ```env
 YTDLP_YOUTUBE_PO_TOKEN=web.gvs+TOKEN_VALUE
@@ -146,6 +173,8 @@ YTDLP_YOUTUBE_VISITOR_DATA=VISITOR_DATA_VALUE
 ```
 
 如果报 `This video is DRM protected`，表示平台返回的是 DRM 受保护视频流；本工具不会绕过 DRM，也无法下载这类受保护内容。请更换非 DRM 视频，或使用平台提供的官方离线/下载能力。
+
+`/api/health` 会返回 ffmpeg、Node.js、三平台 Cookie 来源、YouTube PO Token/Visitor Data、DeepSeek API Key 等诊断状态。遇到下载或 AI 功能异常时，建议先看这个接口的 `checks` 字段。也可以直接访问 `/api/cookies/status` 查看 YouTube/Bilibili/Douyin 的 Cookie 状态。
 
 ## API Endpoints
 
@@ -195,6 +224,7 @@ YTDLP_YOUTUBE_VISITOR_DATA=VISITOR_DATA_VALUE
 | GET/POST | `/api/bilibili/qrcode` | 生成 Bilibili 登录二维码 |
 | GET | `/api/bilibili/qrcode/status` | 查询扫码状态 |
 | GET | `/api/bilibili/status` | 查询 Bilibili Cookie 状态 |
+| GET | `/api/cookies/status` | 查询三平台 Cookie 状态 |
 | POST | `/api/cookies/sync` | 接收浏览器扩展同步 Cookie |
 
 ## Recent Verification
@@ -207,12 +237,11 @@ YTDLP_YOUTUBE_VISITOR_DATA=VISITOR_DATA_VALUE
 
 默认 Cookie 优先级：
 
-1. `YTDLP_COOKIES_PATH`
-2. Bilibili QR 登录保存的 Cookie
-3. `downloads/synced_cookies.txt`
-4. 项目根目录 `cookies.txt`
-5. 项目根目录 `yt-dlp-cookies.txt`
-6. 如果设置 `YTDLP_COOKIES_BROWSER=chrome/firefox/brave`，则使用浏览器 Cookie 读取能力
+1. 平台专属环境变量：`YTDLP_YOUTUBE_COOKIES_PATH` / `YTDLP_BILIBILI_COOKIES_PATH` / `YTDLP_DOUYIN_COOKIES_PATH`
+2. Bilibili QR 登录保存的 Cookie（仅 Bilibili）
+3. 浏览器扩展同步的 `downloads/cookies/<platform>.txt`
+4. 如果设置 `YTDLP_COOKIES_BROWSER=chrome/edge/firefox/brave`，则使用 yt-dlp 的浏览器 Cookie 读取能力作为备用
+5. 通用 Cookie：`YTDLP_COOKIES_PATH`、`downloads/synced_cookies.txt`、项目根目录 `cookies.txt`、项目根目录 `yt-dlp-cookies.txt`
 
 ## Disclaimer
 

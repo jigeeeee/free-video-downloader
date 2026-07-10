@@ -11,7 +11,6 @@ from __future__ import annotations
 import abc
 import asyncio
 import logging
-import traceback
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -159,9 +158,9 @@ class _InMemoryBackend(QueueBackend):
                 record.status = TaskStatus.ERROR
                 record.error = "Cancelled"
                 storage.update_task(task_id, status=record.status.value, error=record.error)
-            except Exception:
+            except Exception as exc:
                 record.status = TaskStatus.ERROR
-                record.error = traceback.format_exc()
+                record.error = str(exc) or "Task failed"
                 storage.update_task(task_id, status=record.status.value, error=record.error)
                 log.exception("Task %s[%s] failed", task_type, task_id)
             finally:

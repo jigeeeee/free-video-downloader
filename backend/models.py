@@ -44,6 +44,10 @@ class DownloadTask(BaseModel):
     filename: Optional[str] = None
     filesize_str: Optional[str] = None
     error: Optional[str] = None
+    requested_format_id: Optional[str] = None
+    resolved_format_id: Optional[str] = None
+    actual_format_id: Optional[str] = None
+    format_selector: Optional[str] = None
 
 
 class FileInfo(BaseModel):

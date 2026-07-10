@@ -35,9 +35,12 @@ watch(() => props.url, () => {
 
 // ── Generic poll helper ───────────────────────────────────────────
 async function pollUntil(endpoint, taskId) {
-  for (let i = 0; i < 60; i++) {
+  // Subtitle extraction and long AI responses can legitimately exceed two
+  // minutes. Backend task errors still stop polling immediately.
+  for (let i = 0; i < 300; i++) {
     await new Promise(r => setTimeout(r, 2000))
     const res = await fetch(`/api/${endpoint}/${taskId}`)
+    if (!res.ok) throw new Error(`Unable to check ${endpoint} task status`)
     const data = await res.json()
     if (data.status === "done") return data.result
     if (data.status === "error") throw new Error(data.error || "AI task failed")

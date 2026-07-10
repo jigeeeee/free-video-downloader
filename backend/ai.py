@@ -32,8 +32,8 @@ def _get_client() -> openai.AsyncOpenAI:
     if _client is not None:
         return _client
 
-    api_key = os.getenv("DEEPSEEK_API_KEY", "")
-    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    api_key = config.DEEPSEEK_API_KEY
+    base_url = config.DEEPSEEK_BASE_URL
     _client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
     return _client
 
@@ -60,7 +60,7 @@ async def summarize_video(
         { one_liner, chapters: [...], key_points: [...], tags: [...] }
     """
     client = _get_client()
-    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = model or config.DEEPSEEK_MODEL
     prompt = summarize_prompt(title, _trim_text(subtitle_text), lang)
 
     resp = await client.chat.completions.create(
@@ -92,7 +92,7 @@ async def ask_video(
     Returns { answer, tokens_used }.
     """
     client = _get_client()
-    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = model or config.DEEPSEEK_MODEL
     prompt = question_prompt(title, _trim_text(subtitle_text), question, chat_history, lang)
 
     resp = await client.chat.completions.create(
@@ -157,7 +157,7 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
 async def test_connection() -> Dict[str, Any]:
     """Quick connectivity check — calls DeepSeek with a tiny prompt."""
     client = _get_client()
-    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = config.DEEPSEEK_MODEL
 
     resp = await client.chat.completions.create(
         model=model_name,
@@ -188,7 +188,7 @@ async def generate_mindmap(
     from backend.prompts import mindmap_prompt
 
     client = _get_client()
-    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = model or config.DEEPSEEK_MODEL
     prompt = mindmap_prompt(title, _trim_text(subtitle_text), lang)
 
     resp = await client.chat.completions.create(
@@ -264,7 +264,7 @@ async def translate_subtitles(
     from backend.prompts import translate_prompt
 
     client = _get_client()
-    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = model or config.DEEPSEEK_MODEL
     prompt = translate_prompt(_trim_text(subtitle_text, 30000), target_lang)
 
     resp = await client.chat.completions.create(
@@ -298,7 +298,7 @@ async def rewrite_content(
     from backend.prompts import rewrite_prompt
 
     client = _get_client()
-    model_name = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    model_name = model or config.DEEPSEEK_MODEL
     prompt = rewrite_prompt(title, _trim_text(source_text), style, lang)
 
     resp = await client.chat.completions.create(

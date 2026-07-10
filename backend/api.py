@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -33,7 +34,8 @@ from backend.ai import ask_video as _ai_ask
 from backend.ai import translate_subtitles as _ai_translate
 from backend.ai import rewrite_content as _ai_rewrite
 from backend.transcribe import transcribe_file as _whisper_transcribe
-from backend.cookies import write_synced_cookiefile
+from backend.cookies import cookie_status as _cookie_status
+from backend.cookies import write_synced_cookiefiles
 from backend.media import convert_media as _convert_media
 from backend.media import resolve_download_file, safe_filename
 from backend.startup_checks import run_startup_checks
@@ -46,6 +48,8 @@ from backend.bilibili_auth import (
 
 # Cache recent parse results to avoid duplicate API calls (Douyin rate-limits)
 _info_cache = {}
+MEDIA_LIBRARY_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".m4a", ".mp3", ".aac", ".opus", ".wav"}
+TEMP_FRAGMENT_RE = re.compile(r"\.f\d+(?:-[^.]*)?\.(?:mp4|webm|m4a|mp3|aac|opus|wav)$", re.IGNORECASE)
 
 
 app = FastAPI(
@@ -72,6 +76,11 @@ async def startup():
 async def health():
     checks = run_startup_checks()
     return {"status": "ok" if checks["ok"] else "degraded", "service": "video-downloader", "checks": checks}
+
+
+@app.get("/api/cookies/status")
+async def cookies_status():
+    return _cookie_status()
 
 
 @app.get("/api/tasks", response_model=TaskListResponse)
@@ -170,6 +179,10 @@ async def get_download_progress(task_id: str):
         error=record.error,
         filename=(record.result or {}).get("filename"),
         filesize_str=(record.result or {}).get("filesize_str"),
+        requested_format_id=(record.result or {}).get("requested_format_id"),
+        resolved_format_id=(record.result or {}).get("resolved_format_id"),
+        actual_format_id=(record.result or {}).get("actual_format_id"),
+        format_selector=(record.result or {}).get("format_selector"),
     )
 
 
@@ -179,7 +192,7 @@ async def list_files():
     files = []
     if download_dir.exists():
         for f in sorted(download_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-            if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in (".mp4", ".webm", ".mkv", ".mov"):
+            if _is_library_media_file(f):
                 size = f.stat().st_size
                 if size >= 1_000_000_000: size_str = f"{size/1_000_000_000:.1f} GB"
                 elif size >= 1_000_000: size_str = f"{size/1_000_000:.1f} MB"
@@ -249,6 +262,10 @@ async def _run_download_job(task_id: str, **kwargs) -> dict:
         "filename": progress.get("filename"),
         "filesize_str": progress.get("filesize_str"),
         "status": progress.get("status", "done"),
+        "requested_format_id": progress.get("requested_format_id"),
+        "resolved_format_id": progress.get("resolved_format_id"),
+        "actual_format_id": progress.get("actual_format_id"),
+        "format_selector": progress.get("format_selector"),
     }
 
 
@@ -798,8 +815,8 @@ async def cookies_sync(data: dict):
     if not isinstance(items, list):
         items = []
 
-    output, count = write_synced_cookiefile(items)
-    return {"ok": True, "count": count, "file": output}
+    result = write_synced_cookiefiles(items)
+    return {"ok": True, **result}
 
 
 async def _run_on_startup():
@@ -843,6 +860,16 @@ def _find_requested_format(info: Optional[dict], format_id: str) -> Optional[dic
     return None
 
 
+def _is_library_media_file(path: Path) -> bool:
+    return (
+        path.is_file()
+        and not path.name.startswith(".")
+        and path.suffix.lower() in MEDIA_LIBRARY_EXTS
+        and not TEMP_FRAGMENT_RE.search(path.name)
+        and not path.name.lower().endswith(".part")
+    )
+
+
 def _sync_legacy_progress(record) -> None:
     progress = get_progress(record.task_id)
     if not progress:
@@ -857,7 +884,7 @@ def _sync_legacy_progress(record) -> None:
     record.percent = float(progress.get("percent") or record.percent or 0)
     record.error = progress.get("error") or record.error
     result = record.result or {}
-    for key in ("filename", "filesize_str", "speed", "eta"):
+    for key in ("filename", "filesize_str", "speed", "eta", "requested_format_id", "resolved_format_id", "actual_format_id", "format_selector"):
         if progress.get(key):
             result[key] = progress[key]
     record.result = result
@@ -881,7 +908,7 @@ def _persist_progress(task_id: str, progress: dict) -> None:
     }
     result = {
         key: progress.get(key)
-        for key in ("filename", "filesize_str", "speed", "eta")
+        for key in ("filename", "filesize_str", "speed", "eta", "requested_format_id", "resolved_format_id", "actual_format_id", "format_selector")
         if progress.get(key)
     }
     storage.update_task(

@@ -1,4 +1,41 @@
-// Content script — asks background for cookies, posts to backend.
+// Content script: asks background for cookies, posts to the local backend.
+
+const BACKEND_CANDIDATES = [
+  "http://127.0.0.1:8002",
+  "http://localhost:8002",
+  "http://127.0.0.1:8001",
+  "http://localhost:8001",
+  "http://127.0.0.1:8003",
+  "http://localhost:8003",
+  "http://127.0.0.1:8000",
+  "http://localhost:8000",
+];
+
+async function postCookies(cookies) {
+  let lastError = null;
+  for (const baseUrl of BACKEND_CANDIDATES) {
+    try {
+      const response = await fetch(`${baseUrl}/api/cookies/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cookies }),
+      });
+      if (!response.ok) {
+        lastError = new Error(`${baseUrl} returned ${response.status}`);
+        continue;
+      }
+      const data = await response.json();
+      console.log("[CookieSync] Synced cookies to", baseUrl, data);
+      return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) {
+    console.warn("[CookieSync] API error:", lastError);
+  }
+  return null;
+}
 
 function syncCookies() {
   chrome.runtime.sendMessage({ action: "get_cookies" }, (response) => {
@@ -7,18 +44,11 @@ function syncCookies() {
       return;
     }
     if (!response || !response.success) return;
-    const cookies = response.cookies;
-    const count = Object.keys(cookies).length;
-    if (count === 0) return;
 
-    fetch("http://127.0.0.1:8001/api/cookies/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cookies }),
-    })
-    .then(r => r.json())
-    .then(d => console.log(`[CookieSync] Synced ${d.count} cookies`))
-    .catch(e => console.warn("[CookieSync] API error:", e));
+    const cookies = response.cookies || [];
+    if (!Array.isArray(cookies) || cookies.length === 0) return;
+
+    postCookies(cookies);
   });
 }
 

@@ -57,7 +57,7 @@ def _get_cookies() -> Dict[str, str]:
     cookies = {}
     cookie_files = []
 
-    cookiefile = get_cookiefile()
+    cookiefile = get_cookiefile("douyin")
     if cookiefile:
         cookie_files.append(cookiefile)
 
@@ -156,11 +156,11 @@ def extract_info(url: str) -> dict:
                 if resp2.status_code == 200 and resp2.text.strip():
                     resp = resp2
                 else:
-                    raise RuntimeError("Douyin requires cookies. Click '绑定B站' to login, or export cookies.txt from browser (login to douyin.com).")
+                    raise RuntimeError("Douyin requires cookies. Log into douyin.com in your browser and sync cookies with the extension, or set YTDLP_COOKIES_BROWSER=chrome/edge/firefox/brave.")
             else:
-                raise RuntimeError("Douyin requires cookies. Export cookies.txt from browser (login to douyin.com).")
+                raise RuntimeError("Douyin requires cookies. Log into douyin.com in your browser and sync cookies with the extension, or set YTDLP_COOKIES_BROWSER=chrome/edge/firefox/brave.")
         else:
-            raise RuntimeError("Douyin API returned empty response. Cookies may be expired. Re-export cookies.txt.")
+            raise RuntimeError("Douyin API returned empty response. Douyin cookies may be expired; resync browser cookies.")
 
     try:
         data = resp.json()
@@ -170,8 +170,8 @@ def extract_info(url: str) -> dict:
     aweme_detail = data.get("aweme_detail")
     if not aweme_detail:
         if not cookies:
-            raise RuntimeError("Douyin requires cookies. Export cookies.txt from your browser (logged into douyin.com).")
-        raise RuntimeError(f"Douyin returned empty data. Cookies may be expired. Status: {data.get('status_code')}")
+            raise RuntimeError("Douyin requires cookies. Log into douyin.com in your browser and sync cookies with the extension, or set YTDLP_COOKIES_BROWSER=chrome/edge/firefox/brave.")
+        raise RuntimeError(f"Douyin returned empty data. Douyin cookies may be expired. Status: {data.get('status_code')}")
 
     video = aweme_detail.get("video", {})
     play_addr = video.get("play_addr", {}) or {}

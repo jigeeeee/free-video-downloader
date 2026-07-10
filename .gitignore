@@ -28,3 +28,4 @@ frontend/dist/
 _t.py
 _fix.py
 _douyin_src/
+.pytest_cache/

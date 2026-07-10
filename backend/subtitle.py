@@ -11,6 +11,7 @@ Output layout:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -104,6 +105,68 @@ def _parse_srt_to_segments(srt_path: str) -> list:
     return segments
 
 
+def _extract_subtitle_info(ydl, url: str, platform: str) -> dict:
+    """Extract caption metadata without selecting a media format.
+
+    Some YouTube player responses expose caption tracks but no media formats
+    usable by yt-dlp's default ``best`` selector. Subtitle work only needs the
+    caption metadata, so processing the media result is both unnecessary and
+    a source of ``Requested format is not available`` failures.
+    """
+    return ydl.extract_info(url, download=False, process=platform != "YouTube")
+
+
+def _select_subtitle_track(tracks: list) -> Optional[dict]:
+    """Choose a text-friendly subtitle representation from one language."""
+    if not tracks:
+        return None
+    extension_priority = {
+        "vtt": 0,
+        "srt": 1,
+        "srv3": 2,
+        "srv2": 3,
+        "srv1": 4,
+        "ttml": 5,
+        "json3": 6,
+    }
+    candidates = [track for track in tracks if track.get("url")]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda track: extension_priority.get(str(track.get("ext") or "").lower(), 99),
+    )
+
+
+def _download_youtube_subtitle_tracks(ydl, info: dict, out_dir: str, languages: List[str]) -> List[str]:
+    """Download YouTube caption URLs directly, without downloading media."""
+    manual_subs = info.get("subtitles") or {}
+    automatic_subs = info.get("automatic_captions") or {}
+    downloaded = []
+    video_id = str(info.get("id") or "subtitle")
+
+    for language in languages:
+        # Manual captions take precedence, matching the metadata returned to
+        # the client. Auto captions are used when manual captions are absent.
+        track = _select_subtitle_track(manual_subs.get(language) or automatic_subs.get(language) or [])
+        if not track:
+            continue
+
+        extension = re.sub(r"[^a-z0-9]", "", str(track.get("ext") or "vtt").lower()) or "vtt"
+        safe_language = re.sub(r"[^A-Za-z0-9_-]", "_", language)
+        target = Path(out_dir) / f"{video_id}.{safe_language}.{extension}"
+        response = ydl.urlopen(track["url"])
+        try:
+            target.write_bytes(response.read())
+        finally:
+            close = getattr(response, "close", None)
+            if close:
+                close()
+        downloaded.append(language)
+
+    return downloaded
+
+
 # ---------------------------------------------------------------------------
 # Core extraction
 # ---------------------------------------------------------------------------
@@ -126,9 +189,6 @@ async def extract_subtitles(
             { lang, lang_name, source: "manual"|"auto", text: str, srt_path, txt_path, line_count }
         ] }
     """
-    import asyncio
-    from backend.queue import get_queue
-
     if not languages:
         languages = ["en"]
 
@@ -146,11 +206,35 @@ def _extract_subtitles_sync(
     url: str, video_id: str, out_dir: str, languages: List[str], task_id: str
 ) -> dict:
     import yt_dlp
+    from backend.downloader import (
+        _YOUTUBE_CLIENTS,
+        _clean_ansi,
+        _detect_platform,
+        _format_drm_error,
+        _is_download_retryable_error,
+        _is_drm_error,
+    )
+
+    platform = _detect_platform(url)
+    clients = _YOUTUBE_CLIENTS if platform == "YouTube" else [None]
 
     # Step 1: fetch info + available subtitle list
-    info_opts = _build_subtitle_opts(out_dir=None, download=False)
-    with yt_dlp.YoutubeDL(info_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info = None
+    last_error = ""
+    for client in clients:
+        try:
+            info_opts = _build_subtitle_opts(out_dir=None, download=False, url=url, client=client)
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = _extract_subtitle_info(ydl, url, platform)
+            break
+        except Exception as e:
+            last_error = _clean_ansi(str(e))
+            if _is_drm_error(last_error):
+                raise RuntimeError(_format_drm_error(platform))
+            if platform != "YouTube" or not _is_download_retryable_error(last_error):
+                raise
+    if not info:
+        raise RuntimeError(_format_subtitle_failure(platform, last_error))
 
     title = info.get("title", "Unknown")
     available_subs = info.get("subtitles") or {}
@@ -187,14 +271,42 @@ def _extract_subtitles_sync(
         elif auto_subs:
             langs_to_download = [list(auto_subs.keys())[0]]
 
-    # Step 3: download selected subtitle files
-    dl_opts = _build_subtitle_opts(
-        out_dir=out_dir,
-        download=True,
-        languages=langs_to_download,
-    )
-    with yt_dlp.YoutubeDL(dl_opts) as ydl:
-        ydl.download([url])
+    # Step 3: download selected subtitle files. YouTube captions are fetched
+    # from their signed caption URLs directly, so yt-dlp never selects media.
+    downloaded = False
+    for client in clients:
+        try:
+            if platform == "YouTube":
+                info_opts = _build_subtitle_opts(out_dir=None, download=False, url=url, client=client)
+                with yt_dlp.YoutubeDL(info_opts) as ydl:
+                    client_info = _extract_subtitle_info(ydl, url, platform)
+                    downloaded = bool(
+                        _download_youtube_subtitle_tracks(ydl, client_info, out_dir, langs_to_download)
+                    )
+                if not downloaded:
+                    last_error = "No requested subtitle tracks are available"
+                    continue
+            else:
+                dl_opts = _build_subtitle_opts(
+                    out_dir=out_dir,
+                    download=True,
+                    languages=langs_to_download,
+                    url=url,
+                    client=client,
+                )
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    ydl.download([url])
+                downloaded = True
+            break
+        except Exception as e:
+            last_error = _clean_ansi(str(e))
+            if _is_drm_error(last_error):
+                raise RuntimeError(_format_drm_error(platform))
+            if platform != "YouTube" or not _is_download_retryable_error(last_error):
+                raise
+            continue
+    if not downloaded:
+        raise RuntimeError(_format_subtitle_failure(platform, last_error))
 
     # Step 4: parse downloaded files → text + metadata
     extracted = []
@@ -251,6 +363,16 @@ def _extract_subtitles_sync(
     }
 
 
+def _format_subtitle_failure(platform: str, last_error: str) -> str:
+    if platform == "YouTube":
+        return (
+            "YouTube subtitle download failed after trying multiple clients. "
+            f"Last error: {last_error or 'Unknown error'}. "
+            "Try syncing fresh browser cookies, updating yt-dlp, or retrying later."
+        )
+    return f"{platform} subtitle download failed: {last_error or 'Unknown error'}"
+
+
 # ---------------------------------------------------------------------------
 # yt-dlp option builders
 # ---------------------------------------------------------------------------
@@ -259,23 +381,36 @@ def _build_subtitle_opts(
     out_dir: Optional[str] = None,
     download: bool = False,
     languages: Optional[List[str]] = None,
+    url: Optional[str] = None,
+    client: Optional[str] = None,
 ) -> dict:
     """Build yt-dlp options for subtitle extraction."""
     from backend.cookies import apply_cookie_options
-    from backend.downloader import _BROWSER_HEADERS
+    from backend.downloader import _BROWSER_HEADERS, _detect_platform, _youtube_extractor_args
 
+    platform = _detect_platform(url or "")
+    referer = "https://www.youtube.com/" if platform == "YouTube" else "https://www.bilibili.com/"
     opts = {
         "quiet": True,
         "no_warnings": True,
         "no_playlist": True,
         "extract_flat": False,
         "skip_download": True,
-        "http_headers": {**_BROWSER_HEADERS, "Referer": "https://www.bilibili.com/"},
+        "socket_timeout": 60,
+        "retries": 20,
+        "fragment_retries": 20,
+        "file_access_retries": 5,
+        "extractor_retries": 5,
+        "http_headers": {**_BROWSER_HEADERS, "Referer": referer},
         "logger": __import__("logging").getLogger("yt_dlp"),
     }
+    if platform == "YouTube":
+        extractor_args = _youtube_extractor_args(client)
+        if extractor_args:
+            opts["extractor_args"] = extractor_args
 
     # Cookie support — same logic as downloader
-    apply_cookie_options(opts)
+    apply_cookie_options(opts, url=url)
 
     if not download:
         opts["writesubtitles"] = False

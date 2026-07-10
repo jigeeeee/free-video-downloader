@@ -25,5 +25,10 @@ COOKIES_BROWSER = os.environ.get("YTDLP_COOKIES_BROWSER", "")
 YOUTUBE_PO_TOKEN = os.environ.get("YTDLP_YOUTUBE_PO_TOKEN", "")
 YOUTUBE_VISITOR_DATA = os.environ.get("YTDLP_YOUTUBE_VISITOR_DATA", "")
 
+# AI provider settings.
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+
 Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
 Path(SUBTITLE_DIR).mkdir(parents=True, exist_ok=True)
